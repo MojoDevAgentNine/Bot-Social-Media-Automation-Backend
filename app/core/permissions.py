@@ -63,7 +63,7 @@ class UserService:
                 f"get?token__eq={token}"
             )
 
-            if status_code == 200 and blacklisted:
+            if token in blacklisted:
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
                     detail="Token has been revoked",
@@ -128,6 +128,8 @@ class UserService:
 # Dependency for getting current user
 async def get_current_user(token: str = Depends(oauth2_scheme)):
     user_service = UserService()
+    print("*" * 100)
+    print("ami", token)
     return await user_service.get_current_user(token)
 
 

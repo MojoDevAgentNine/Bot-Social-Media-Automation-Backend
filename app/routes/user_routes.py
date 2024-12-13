@@ -23,27 +23,12 @@ from app.utils.rate_limiter import limiter
 from app.utils.redis import redis_client
 from app.utils.token_utils import create_password_reset_token, TokenStorage
 from app.database import get_usres_table
+from multidb_request_handler import DatabaseOperation
 
 router = APIRouter()
 
 
 
-
-
-"""
-    Register a new user.
-
-    Args:
-        request (UserRegisterRequest): The request payload containing user details.
-        db (Session): Database session dependency.
-        current_user (dict): The current authenticated super admin.
-
-    Returns:
-        dict: A response containing the newly registered user's details.
-
-    Raises:
-        HTTPException: If user registration fails due to invalid data.
-"""
 import asyncio
 
 @router.post("/register")
@@ -69,70 +54,9 @@ def register(
 
 
 
-
-"""
-    Authenticate a user and provide access and refresh tokens.
-
-    Args:
-        login_request (UserLoginRequest): The login credentials provided by the user.
-        db (Session): Database session dependency.
-
-    Returns:
-        dict: A response containing the authentication tokens and token type.
-
-    Raises:
-        HTTPException: If authentication fails due to invalid credentials.
-"""
-# @router.post("/login")
-# def login(login_request: UserLoginRequest, db: Session = Depends(get_db)):
-#     # Authenticate user
-#     user = login_user(db=db, login_request=login_request)
-#
-#     if user:
-#         # Generate both access and refresh tokens for the authenticated user
-#         access_token = create_access_token(data={"user_id": user.id})
-#         refresh_token = create_refresh_token(data={"user_id": user.id})
-#         logger.info(f"Email: {user.email}, Role: {user.role} - User logged in successfully")
-#         # Return the response with both tokens
-#         return {
-#             "message": "Login successful",
-#             "access_token": access_token,
-#             "refresh_token": refresh_token,
-#             "token_type": "bearer"
-#         }
-#     else:
-#         logger.error(f"Email: {login_request.email} - Invalid username/email or password")
-#         raise HTTPException(status_code=400, detail="Invalid username/email or password")
 @router.post("/login")
 def login(login_request: UserLoginRequest):
     # Authenticate user
-    # user = login_user(db=db, login_request=login_request)
-    #
-    # if user:
-    #     # Generate and send verification code
-    #     verification_code = create_verification_code(db, user.id)
-    #     success = send_verification_email(user.email, verification_code)
-    #
-    #     if not success:
-    #         logger.error(f"Failed to send verification email to {user.email}")
-    #         raise HTTPException(
-    #             status_code=500,
-    #             detail="Failed to send verification email"
-    #         )
-    #
-    #     logger.info(f"Verification code sent to {user.email}")
-    #     return LoginResponsePending(
-    #         message="Verification code sent to your email",
-    #         email=user.email,
-    #         requires_verification=True
-    #     )
-    # else:
-    #     logger.error(f"Invalid login attempt for email: {login_request.email}")
-    #     raise HTTPException(
-    #         status_code=400,
-    #         detail="Invalid username/email or password"
-    #     )
-
     try:
         # Authenticate user
         print(login_request.email, login_request.password)
@@ -177,39 +101,6 @@ def login(login_request: UserLoginRequest):
 
 @router.post("/verify-code")
 def verify_code(verification_request: VerificationCodeRequest):
-    # user = db.query(User).filter(User.email == verification_request.email).first()
-    # print(user)
-    # if not user:
-    #     raise HTTPException(status_code=404, detail="User not found")
-    #
-    # verification = db.query(EmailVerificationCode).filter(
-    #     EmailVerificationCode.user_id == user.id,
-    #     EmailVerificationCode.code == verification_request.code,
-    #     EmailVerificationCode.is_used == False,
-    #     EmailVerificationCode.expires_at > datetime.utcnow()
-    # ).first()
-    #
-    # if not verification:
-    #     logger.error(f"Invalid or expired verification code for email: {user.email}")
-    #     raise HTTPException(
-    #         status_code=400,
-    #         detail="Invalid or expired verification code"
-    #     )
-    #
-    # # Mark the code as used
-    # verification.is_used = True
-    # db.commit()
-    #
-    # # Generate tokens
-    # access_token = create_access_token(data={"user_id": user.id})
-    # refresh_token = create_refresh_token(data={"user_id": user.id})
-    #
-    # logger.info(f"Email: {user.email} verified successfully")
-    # return LoginResponseComplete(
-    #     access_token=access_token,
-    #     refresh_token=refresh_token,
-    #     token_type="bearer"
-    # )
     try:
         verification_service = VerificationService()
 
@@ -250,50 +141,68 @@ def verify_code(verification_request: VerificationCodeRequest):
 
 
 
-
-"""
-    Log out a user by adding their token to the blacklist.
-
-    Args:
-        token (str): The refresh token provided by the client.
-        db (Session): Database session dependency.
-        current_user (User): The authenticated user.
-
-    Returns:
-        dict: A response containing a success message.
-
-    Raises:
-        HTTPException: If the refresh token is invalid or the user does not exist.
-"""
 @router.post("/logout")
 def logout(
         token: str = Depends(oauth2_scheme),
-        db: Session = Depends(get_db),
         current_user: User = Depends(get_current_user)
 ):
-    # Add the token to the blacklist to invalidate it
-    db.add(TokenBlacklist(token=token))
-    db.commit()
-    logger.info(f"Email: {current_user.email}, Role: {current_user.role} - User logged out successfully")
-    return {"message": "Logged out successfully"}
+    try:
+        # Initialize database connection for token blacklist
+        blacklist_db = DatabaseOperation(
+            host='http://127.0.0.1',
+            port='44777',
+            database_name='social_automation',
+            table_name='token_blacklist',
+            username='postgres',
+            password='postgres'
+        )
+
+        # Add token to blacklist
+        blacklist_data = {
+            "token": token,
+            "created_at": datetime.utcnow().isoformat(),
+            "user_id": current_user.get('id')  # Optional: track who logged out
+        }
+
+        status_code, response = blacklist_db.post_request(
+            "create",
+            data=blacklist_data
+        )
+
+        if status_code != 201:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to logout"
+            )
+
+        # Log the successful logout
+        logger.info(
+            f"User logged out successfully - "
+            f"Email: {current_user.get('email')}, "
+            f"Role: {current_user.get('role')}"
+        )
+
+        return {
+            "message": "Logged out successfully",
+            "timestamp": datetime.utcnow().isoformat()
+        }
+
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        logger.error(
+            f"Logout error - "
+            f"User: {current_user.get('email')}, "
+            f"Error: {str(e)}"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to logout"
+        )
 
 
 
 
-
-"""
-    Generate a new access token using a valid refresh token.
-
-    Args:
-        refresh_token (str): The refresh token provided by the client.
-        db (Session): Database session dependency.
-
-    Returns:
-        dict: A response containing the new access token and its type.
-
-    Raises:
-        HTTPException: If the refresh token is invalid, expired, or the user does not exist.
-"""
 @router.post("/refresh_token")
 def refresh_token(refresh_token: str, db: Session = Depends(get_db)):
     try:
@@ -324,20 +233,6 @@ def refresh_token(refresh_token: str, db: Session = Depends(get_db)):
 
 
 
-
-"""
-    Retrieve a list of all registered users.
-
-    Args:
-        db (Session): Database session dependency.
-        current_user (dict): Current authenticated super admin.
-
-    Returns:
-        dict: A response containing a list of all users.
-
-    Raises:
-        HTTPException: If the current user is not a super admin.
-"""
 @router.get("/all_users")
 def get_users(db: Session = Depends(get_db), current_user: dict = Depends(get_super_admin_user)):
     # Get all users from the database
@@ -348,21 +243,6 @@ def get_users(db: Session = Depends(get_db), current_user: dict = Depends(get_su
 
 
 
-
-"""
-    Retrieve the current user's profile information. 
-    If a profile does not exist, create a default one.
-
-    Args:
-        user (User): The currently authenticated user.
-        db (Session): Database session dependency.
-
-    Returns:
-        dict: A dictionary containing user and profile information.
-
-    Raises:
-        HTTPException: If the user is not authenticated.
-"""
 @router.get("/me")
 async def get_me(current_user: dict = Depends(get_current_user)):
     try:
@@ -394,91 +274,7 @@ async def get_me(current_user: dict = Depends(get_current_user)):
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Error retrieving user profile"
         )
-# def get_me(user: User = Depends(get_current_user), db: Session = Depends(get_db)):
-#     # Fetch the user's profile using the user_id
-#     profile = db.query(Profile).filter(Profile.user_id == user.id).first()
-#
-#     if not profile:
-#         # Create a profile if it doesn't exist
-#         profile = Profile(
-#             user_id=user.id,
-#             address="",
-#             city="",
-#             state="",
-#             zip_code="",
-#             country=""
-#         )
-#         db.add(profile)
-#         db.commit()
-#         db.refresh(profile)
-#     logger.info(f"Email: {user.email}, Role: {user.role} - User profile retrieved successfully")
-#     # Return user and profile data without password
-#     return {
-#         "email": user.email,
-#         "full_name": user.full_name,
-#         "is_active": user.is_active,
-#         "role": user.role,
-#         "phone": user.phone,
-#         "address": profile.address or "",
-#         "city": profile.city or "",
-#         "state": profile.state or "",
-#         "zip_code": profile.zip_code or "",
-#         "country": profile.country or ""
-#     }
 
-
-
-
-
-"""
-    Update or create the current user's profile information.
-
-    Args:
-        profile_data (ProfileUpdateRequest): The profile update payload.
-        db (Session): Database session dependency.
-        current_user (User): The currently authenticated user.
-
-    Returns:
-        ProfileResponse: The updated profile information.
-        
-    Raises:
-        HTTPException: If the user is not authenticated.
-"""
-
-
-# @router.patch("/update_profile", response_model=ProfileResponse)
-# async def update_user_profile(
-#         profile_data: ProfileUpdateRequest,
-#         current_user: dict = Depends(get_current_user)
-# ):
-#     try:
-#         profile_service = ProfileService()
-#
-#         # Update profile
-#         updated_profile = await profile_service.update_profile(
-#             user_id=current_user['id'],
-#             profile_data=profile_data.model_dump(exclude_unset=True)
-#         )
-#
-#         logger.info(f"Email: {current_user['email']}, Role: {current_user['role']} - User profile updated successfully")
-#
-#         return ProfileResponse(
-#             full_name=current_user['full_name'],
-#             email=current_user['email'],
-#             phone=current_user.get('phone', ''),
-#             address=updated_profile.get('address', ''),
-#             city=updated_profile.get('city', ''),
-#             state=updated_profile.get('state', ''),
-#             zip_code=updated_profile.get('zip_code', ''),
-#             country=updated_profile.get('country', '')
-#         )
-#
-#     except Exception as e:
-#         logger.error(f"Error in update_user_profile: {str(e)}")
-#         raise HTTPException(
-#             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-#             detail="Failed to update profile"
-#         )
 
 @router.patch("/update_profile", response_model=ProfileResponse)
 async def update_user_profile(
@@ -525,58 +321,6 @@ async def update_user_profile(
         )
 
 
-# @router.patch("/update_profile", response_model=ProfileResponse)
-# async def update_user_profile(
-#         profile_data: ProfileUpdateRequest,
-#         db: Session = Depends(get_db),
-#         current_user: User = Depends(get_current_user)
-# ):
-#     # Fetch the existing profile
-#     profile = db.query(Profile).filter(Profile.user_id == current_user.id).first()
-#
-#     if not profile:
-#         # Create a new profile if it doesn't exist
-#         profile = Profile(user_id=current_user.id)
-#         db.add(profile)
-#
-#     # Update only the provided fields
-#     for key, value in profile_data.model_dump(exclude_unset=True).items():
-#         setattr(profile, key, value)
-#
-#     db.commit()
-#     db.refresh(profile)
-#     logger.info(f"Email: {current_user.email}, Role: {current_user.role} - User profile updated successfully")
-#     redis_client.delete("all_users")
-#     return ProfileResponse(
-#         full_name=current_user.full_name,
-#         email=current_user.email,
-#         phone=current_user.phone,
-#         address=profile.address,
-#         city=profile.city,
-#         state=profile.state,
-#         zip_code=profile.zip_code,
-#         country=profile.country
-#     )
-
-
-
-
-
-"""
-    Change the current user's password.
-
-    Args:
-        request (ChangePasswordRequest): The password change payload containing old, new, and confirm passwords.
-        db (Session): Database session dependency.
-        current_user (User): The currently authenticated user.
-        token (str): The JWT token used for authentication.
-
-    Returns:
-        dict: A message indicating the password change was successful.
-
-    Raises:
-        HTTPException: If the old password is incorrect, the new password and confirmation do not match, or the user does not exist.
-"""
 @router.post("/change_password")
 async def change_password(
     request: ChangePasswordRequest,
@@ -605,6 +349,133 @@ async def change_password(
     db.commit()
     logger.info(f"User ID: {current_user.id}, User Email: {current_user.email} - Password changed successfully")
     return {"message": "Password changed successfully. Please log in again to continue."}
+
+
+# @router.post("/change_password")
+# async def change_password(
+#         request: ChangePasswordRequest,
+#         current_user: dict = Depends(get_current_user),
+#         token: str = Depends(oauth2_scheme)
+# ):
+#     try:
+#         # Initialize database connections
+#         users_db = DatabaseOperation(
+#             host='http://127.0.0.1',
+#             port='44777',
+#             database_name='social_automation',
+#             table_name='users',
+#             username='postgres',
+#             password='postgres'
+#         )
+#
+#         blacklist_db = DatabaseOperation(
+#             host='http://127.0.0.1',
+#             port='44777',
+#             database_name='social_automation',
+#             table_name='token_blacklist',
+#             username='postgres',
+#             password='postgres'
+#         )
+#
+#         # Get current user's password
+#         status_code, users = users_db.post_request(f"get?id__eq={current_user['id']}")
+#         if status_code != 200 or not users:
+#             raise HTTPException(
+#                 status_code=status.HTTP_404_NOT_FOUND,
+#                 detail="User not found"
+#             )
+#
+#         user = users[0]
+#
+#         # Verify the old password
+#         if not bcrypt.verify(request.old_password, user['password']):
+#             logger.warning(
+#                 f"User ID: {user['id']}, "
+#                 f"User Email: {user['email']} - "
+#                 f"Old password is incorrect"
+#             )
+#             raise HTTPException(
+#                 status_code=status.HTTP_400_BAD_REQUEST,
+#                 detail="Old password is incorrect"
+#             )
+#
+#         # Check if new password and confirm password match
+#         if request.new_password != request.confirm_password:
+#             logger.warning(
+#                 f"User ID: {user['id']}, "
+#                 f"User Email: {user['email']} - "
+#                 f"New password and confirmation do not match"
+#             )
+#             raise HTTPException(
+#                 status_code=status.HTTP_400_BAD_REQUEST,
+#                 detail="New password and confirmation do not match"
+#             )
+#
+#         # Hash the new password
+#         hashed_password = bcrypt.hash(request.new_password)
+#
+#         # Update user's password
+#         status_code, _ = users_db.patch_request(
+#             f"update/{user['id']}",
+#             data={"password": hashed_password}
+#         )
+#
+#         if status_code != 202:
+#             raise HTTPException(
+#                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+#                 detail="Failed to update password"
+#             )
+#
+#         # Add the current token to the blacklist
+#         blacklist_data = {
+#             "token": token,
+#             "created_at": datetime.utcnow().isoformat(),
+#             "user_id": user['id']
+#         }
+#
+#         status_code, _ = blacklist_db.post_request(
+#             "create",
+#             data=blacklist_data
+#         )
+#
+#         if status_code != 201:
+#             logger.error(
+#                 f"Failed to blacklist token for user {user['email']} "
+#                 f"during password change"
+#             )
+#             # Continue anyway as password was changed successfully
+#
+#         # Clear any cached data
+#         try:
+#             if redis_client:
+#                 redis_client.delete(f"user_token_{user['id']}")
+#                 redis_client.delete("all_users")
+#         except Exception as e:
+#             logger.warning(f"Failed to clear Redis cache: {str(e)}")
+#
+#         logger.info(
+#             f"User ID: {user['id']}, "
+#             f"User Email: {user['email']} - "
+#             f"Password changed successfully"
+#         )
+#
+#         return {
+#             "message": "Password changed successfully. Please log in again to continue.",
+#             "timestamp": datetime.utcnow().isoformat()
+#         }
+#
+#     except HTTPException as he:
+#         raise he
+#     except Exception as e:
+#         logger.error(
+#             f"Password change error - "
+#             f"User: {current_user.get('email')}, "
+#             f"Error: {str(e)}"
+#         )
+#         raise HTTPException(
+#             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+#             detail="Failed to change password"
+#         )
 
 
 from fastapi import  Depends, HTTPException, Request, BackgroundTasks
