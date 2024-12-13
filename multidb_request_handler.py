@@ -51,7 +51,7 @@ class DatabaseOperation:
         response = requests.request(
             method, url + endpoint, headers=self.headers, data=payload
         )
-        logging.info(f"response code: {response.status_code}")
+        # logging.info(f"response code: {response.status_code}")
         response_text = None
         try:
             response_text = response.json()

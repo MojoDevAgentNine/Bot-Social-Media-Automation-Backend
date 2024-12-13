@@ -338,8 +338,8 @@ def refresh_token(refresh_token: str, db: Session = Depends(get_db)):
 @router.get("/all_users")
 def get_users(db: Session = Depends(get_db), current_user: dict = Depends(get_super_admin_user)):
     # Get all users from the database
-    users = get_all_users(db)
-    logger.info(f"Email: {current_user.email}, Role: {current_user.role} - All users retrieved successfully")
+    users = get_all_users()
+    # logger.info(f"Email: {current_user.email}, Role: {current_user.role} - All users retrieved successfully")
     return {"users": users}
 
 

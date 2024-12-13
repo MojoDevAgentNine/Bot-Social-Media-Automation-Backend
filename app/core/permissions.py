@@ -140,7 +140,7 @@ def get_super_admin_user(current_user: Optional[dict] = Depends(get_current_user
             status_code=401,
             detail="Authentication required"
         )
-    if current_user.role not in ["admin", "super_admin"]:
+    if current_user["role"] not in ["admin", "super_admin"]:
         raise HTTPException(
             status_code=403,
             detail="Super admin privileges required"
