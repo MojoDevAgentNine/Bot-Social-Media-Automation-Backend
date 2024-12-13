@@ -125,7 +125,7 @@ if __name__ == "__main__":
     db = DatabaseOperation(host='http://127.0.0.1', port='44777',
                            database_name='social_automation', table_name='users',
                            username='postgres', password='postgres')
-    print(db.post_request(endpoint="get?email__like=arif.reza3126@gmail.com&role__like=admin"))
+    print(db.post_request(endpoint="get?id__like=arif.reza3126@gmail.com&role__like=admin"))
 
     # if status_code == 200:
     #     print("success")

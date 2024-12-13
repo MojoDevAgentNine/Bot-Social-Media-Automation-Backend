@@ -1,7 +1,7 @@
 import os
 
 from starlette import status
-
+import requests
 from app.axiom_logger.authentication import logger
 from app.core.permissions import get_super_admin_user, get_current_user, oauth2_scheme, UserService
 from app.schemas.user_schema import UserRegisterRequest, ProfileUpdateRequest, \
@@ -44,6 +44,8 @@ router = APIRouter()
     Raises:
         HTTPException: If user registration fails due to invalid data.
 """
+import asyncio
+
 @router.post("/register")
 def register(
     request: UserRegisterRequest,
@@ -51,13 +53,13 @@ def register(
     current_user: dict = Depends(get_super_admin_user)  # Add this dependency
 ):
     try:
-        user = register_user(db, request)
-        logger.info(f"Email: {user.email}, Role: {user.role} - User registered successfully")
+        user = asyncio.run(register_user(request))
+        logger.info(f"Email: {current_user.get('email')} created user Email: {user}, Role: {user} - User registered successfully")
         return {
             "message": "User registered successfully",
             "user": {
-                "email": user.email,
-                "role": user.role
+                "email": user.get('email'),
+                "role": user.get('role')
             }
         }
     except ValueError as e:
@@ -216,6 +218,7 @@ def verify_code(verification_request: VerificationCodeRequest):
             email=verification_request.email,
             code=verification_request.code
         )
+        print(verification_request.code)
         print(user)
 
         if not user:

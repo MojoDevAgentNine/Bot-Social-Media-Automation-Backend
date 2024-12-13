@@ -5,6 +5,7 @@ from typing import Optional
 
 class UserRegisterRequest(BaseModel):
     email: EmailStr
+    full_name: str
     phone: str
     password: str
     role: UserRole = UserRole.USER  # Default role is normal user

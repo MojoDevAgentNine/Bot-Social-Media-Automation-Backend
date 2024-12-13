@@ -74,15 +74,13 @@ class UserService:
             user_id = decode_token(token)
 
             # Get user
-            status_code, users = self.users_db.post_request(f"get?id__eq={user_id}")
+            status_code, users = self.users_db.post_request(f"get")
+            # print(status_code, users)
 
-            if status_code != 200 or not users:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail="User not found"
-                )
+            for user in users:
+                if user['id'] == user_id:
+                    return user
 
-            return users[0]
 
         except Exception as e:
             raise HTTPException(

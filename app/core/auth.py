@@ -88,11 +88,15 @@ class VerificationService:
 
         # Mark code as used
         verification = verifications[-1]
+        print(verification)
         if current_time > verification['expires_at'] :
             raise HTTPException(status_code=400, detail="Verification code has expired")
 
         if verification['is_used']:
             raise HTTPException(status_code=400, detail="Verification code has already been used")
+
+        if verification['code'] != code:
+            raise HTTPException(status_code=400, detail="Invalid verification code")
 
         status_code, _ = self.verification_db.patch_request(
             f"update/{verification['id']}",
@@ -105,66 +109,181 @@ class VerificationService:
         return user
 
 
-def register_user(db: Session, user: UserRegisterRequest, current_user: User = None):
-    # Check if the user already exists
-    existing_user = db.query(User).filter(User.email == user.email).first()
-    if existing_user:
-        raise ValueError("Email already in use.")
+# def register_user(db: Session, user: UserRegisterRequest, current_user: User = None):
+#     # Check if the user already exists
+#     existing_user = db.query(User).filter(User.email == user.email).first()
+#     if existing_user:
+#         raise ValueError("Email already in use.")
+#
+#     # Validate role assignment permissions
+#     if current_user:
+#         # Only super_admin can create admin users
+#         if user.role == UserRole.ADMIN and current_user.role != UserRole.SUPER_ADMIN:
+#             logger.critical(f"Email: {current_user.email}, Role: {current_user.role} - Only super admins can create admin users")
+#             raise HTTPException(
+#                 status_code=403,
+#                 detail="Only super admins can create admin users"
+#             )
+#
+#         # Only super_admin can create other super_admin users
+#         if user.role == UserRole.SUPER_ADMIN and current_user.role != UserRole.SUPER_ADMIN:
+#             logger.critical(f"Email: {current_user.email}, Role: {current_user.role} - Only super admins can create super admin users")
+#             raise HTTPException(
+#                 status_code=403,
+#                 detail="Only super admins can create super admin users"
+#             )
+#
+#     # Hash the password
+#     password = bcrypt.hash(user.password)
+#
+#     # Create a new user
+#     new_user = User(
+#         email=user.email,
+#         password=password,
+#         full_name=user.full_name,
+#         phone=user.phone,
+#         role=user.role,  # Set the role from the request
+#         is_active=True,
+#         created_at=datetime.utcnow(),
+#         updated_at=datetime.utcnow(),
+#     )
+#
+#     db.add(new_user)
+#     db.commit()
+#     db.refresh(new_user)
+#
+#     # Create an initial profile for the user
+#     initial_profile = Profile(
+#         user_id=new_user.id,
+#         address="",
+#         city="",
+#         state="",
+#         zip_code="",
+#         country=""
+#     )
+#
+#     db.add(initial_profile)
+#     db.commit()
+#     db.refresh(initial_profile)
+#     redis_client.delete("all_users")
+#     return new_user
 
-    # Validate role assignment permissions
-    if current_user:
-        # Only super_admin can create admin users
-        if user.role == UserRole.ADMIN and current_user.role != UserRole.SUPER_ADMIN:
-            logger.critical(f"Email: {current_user.email}, Role: {current_user.role} - Only super admins can create admin users")
+async def register_user(user: UserRegisterRequest, current_user: dict = None):
+    try:
+        # Initialize database connections
+        users_db = DatabaseOperation(
+            host='http://127.0.0.1',
+            port='44777',
+            database_name='social_automation',
+            table_name='users',
+            username='postgres',
+            password='postgres'
+        )
+
+        profiles_db = DatabaseOperation(
+            host='http://127.0.0.1',
+            port='44777',
+            database_name='social_automation',
+            table_name='profiles',
+            username='postgres',
+            password='postgres'
+        )
+
+        # Check if the user already exists
+        status_code, existing_users = users_db.post_request(f"get?email__like={user.email}")
+        if status_code == 200 and existing_users:
+            raise ValueError("Email already in use.")
+
+        # Validate role assignment permissions
+        if current_user:
+            # Only super_admin can create admin users
+            if user.role == "admin" and current_user['role'] != "super_admin":
+                logger.critical(
+                    f"Email: {current_user['email']}, Role: {current_user['role']} - Only super admins can create admin users")
+                raise HTTPException(
+                    status_code=403,
+                    detail="Only super admins can create admin users"
+                )
+
+            # Only super_admin can create other super_admin users
+            if user.role == "super_admin" and current_user['role'] != "super_admin":
+                logger.critical(
+                    f"Email: {current_user['email']}, Role: {current_user['role']} - Only super admins can create super admin users")
+                raise HTTPException(
+                    status_code=403,
+                    detail="Only super admins can create super admin users"
+                )
+
+        # Hash the password
+        hashed_password = bcrypt.hash(user.password)
+
+        # Prepare user data
+        new_user_data = {
+            "email": user.email,
+            "password": hashed_password,
+            "full_name": user.full_name,
+            "phone": user.phone,
+            "role": user.role,
+            "is_active": True,
+            "created_at": datetime.utcnow().isoformat(),
+            "updated_at": datetime.utcnow().isoformat()
+        }
+
+        # Create user
+        status_code, created_user = users_db.post_request(
+            "create",
+            data=new_user_data
+        )
+
+        if status_code != 201:
             raise HTTPException(
-                status_code=403,
-                detail="Only super admins can create admin users"
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to create user"
             )
 
-        # Only super_admin can create other super_admin users
-        if user.role == UserRole.SUPER_ADMIN and current_user.role != UserRole.SUPER_ADMIN:
-            logger.critical(f"Email: {current_user.email}, Role: {current_user.role} - Only super admins can create super admin users")
+        created_user = created_user[0]
+        # Create initial profile
+        initial_profile_data = {
+            "user_id": created_user['id'],
+            "address": "",
+            "city": "",
+            "state": "",
+            "zip_code": "",
+            "country": ""
+        }
+
+        status_code, created_profile = profiles_db.post_request(
+            "create",
+            data=initial_profile_data
+        )
+
+        if status_code != 201:
+            # Rollback user creation by deleting the user
+            users_db.post_request(f"delete/{created_user['id']}")
             raise HTTPException(
-                status_code=403,
-                detail="Only super admins can create super admin users"
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to create user profile"
             )
 
-    # Hash the password
-    password = bcrypt.hash(user.password)
+        # Clear cache if using Redis
+        try:
+            if redis_client:
+                redis_client.delete("all_users")
+        except Exception as e:
+            logger.warning(f"Failed to clear Redis cache: {str(e)}")
 
-    # Create a new user
-    new_user = User(
-        email=user.email,
-        password=password,
-        full_name=user.full_name,
-        phone=user.phone,
-        role=user.role,  # Set the role from the request
-        is_active=True,
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow(),
-    )
+        return created_user
 
-    db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
-
-    # Create an initial profile for the user
-    initial_profile = Profile(
-        user_id=new_user.id,
-        address="",
-        city="",
-        state="",
-        zip_code="",
-        country=""
-    )
-
-    db.add(initial_profile)
-    db.commit()
-    db.refresh(initial_profile)
-    redis_client.delete("all_users")
-    return new_user
-
-
+    except ValueError as e:
+        raise e
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        logger.error(f"Error registering user: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to register user"
+        )
 
 
 
