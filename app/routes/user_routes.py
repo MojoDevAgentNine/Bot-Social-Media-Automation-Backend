@@ -1,35 +1,38 @@
 import os
-
-from starlette import status
+import jwt
+import uuid
+import asyncio
 import requests
+from starlette import status
+from datetime import datetime
+from passlib.hash import bcrypt
+from sqlalchemy.orm import Session
+from fastapi import APIRouter, Depends
+from app.database.database import get_db
+from app.database import get_usres_table
+from app.utils.redis import redis_client
+from app.utils.rate_limiter import limiter
+from fastapi.responses import  HTMLResponse
+from app.utils.db_cred import DatabaseManager
+from app.core.user_service import get_all_users
 from app.axiom_logger.authentication import logger
+from app.schemas.user_schema import UserLoginRequest
+from multidb_request_handler import DatabaseOperation
+from fastapi import  Depends, HTTPException, Request, BackgroundTasks
+from app.utils.jwt_utils import create_access_token, create_refresh_token
+from app.utils.token_utils import create_password_reset_token, TokenStorage
+from app.models.user import User, Profile, TokenBlacklist, EmailVerificationCode
+from app.schemas.user_schema import ForgotPasswordRequest, ForgotPasswordResponse
+from app.core.auth import register_user, login_user2, VerificationService, ProfileService
 from app.core.permissions import get_super_admin_user, get_current_user, oauth2_scheme, UserService
+from app.utils.email_utils import create_verification_code, send_verification_email, send_password_reset_email
 from app.schemas.user_schema import UserRegisterRequest, ProfileUpdateRequest, \
     ChangePasswordRequest, ProfileResponse, VerificationCodeRequest, LoginResponsePending, LoginResponseComplete
-from app.core.auth import register_user, login_user2, VerificationService, ProfileService
-from app.schemas.user_schema import UserLoginRequest
-from app.core.user_service import login_user, get_all_users
-from app.utils.email_utils import create_verification_code, send_verification_email, send_password_reset_email
-from app.utils.jwt_utils import create_access_token, create_refresh_token
-from fastapi import APIRouter, Depends
-from sqlalchemy.orm import Session
-from app.database.database import get_db
-from passlib.hash import bcrypt
-from app.models.user import User, Profile, TokenBlacklist, EmailVerificationCode
-import jwt
-from datetime import datetime
-from fastapi.responses import  HTMLResponse
-from app.utils.rate_limiter import limiter
-from app.utils.redis import redis_client
-from app.utils.token_utils import create_password_reset_token, TokenStorage
-from app.database import get_usres_table
-from multidb_request_handler import DatabaseOperation
 
 router = APIRouter()
+db_manager = DatabaseManager()
 
 
-
-import asyncio
 
 @router.post("/register")
 def register(
@@ -59,19 +62,14 @@ def login(login_request: UserLoginRequest):
     # Authenticate user
     try:
         # Authenticate user
-        print(login_request.email, login_request.password)
         user = login_user2(
             login_request.email,
             login_request.password
         )
-        print("i am here")
 
         if not user:
             logger.error(f"Invalid login attempt for email: {login_request.email}")
-            raise HTTPException(
-                status_code=400,
-                detail="Invalid username/email or password"
-            )
+            return "Invalid username/email or password"
 
         # Generate and send verification code
         verification_code = create_verification_code(user['id'])
@@ -148,14 +146,16 @@ def logout(
 ):
     try:
         # Initialize database connection for token blacklist
-        blacklist_db = DatabaseOperation(
-            host='http://127.0.0.1',
-            port='44777',
-            database_name='social_automation',
-            table_name='token_blacklist',
-            username='postgres',
-            password='postgres'
-        )
+        blacklist_db = db_manager.get_database('token_blacklist')
+
+        # blacklist_db = DatabaseOperation(
+        #     host='http://127.0.0.1',
+        #     port='44777',
+        #     database_name='social_automation',
+        #     table_name='token_blacklist',
+        #     username='postgres',
+        #     password='postgres'
+        # )
 
         # Add token to blacklist
         blacklist_data = {
@@ -204,31 +204,105 @@ def logout(
 
 
 @router.post("/refresh_token")
-def refresh_token(refresh_token: str, db: Session = Depends(get_db)):
+async def refresh_token(refresh_token: str):
     try:
-        # Decode the refresh token
-        payload = jwt.decode(refresh_token, os.getenv("SECRET_KEY"), algorithms=["HS256"])
-        user_id = payload.get("user_id")
+        # Initialize database connections
+        users_db = db_manager.get_database('users')
+        # users_db = DatabaseOperation(
+        #     host='http://127.0.0.1',
+        #     port='44777',
+        #     database_name='social_automation',
+        #     table_name='users',
+        #     username='postgres',
+        #     password='postgres'
+        # )
 
-        if user_id is None:
-            logger.warning(f"User ID: {user_id}, User Email: {payload.get('email')} - Invalid refresh token")
+        blacklist_db = db_manager.get_database('token_blacklist')
+
+        blacklist_db = DatabaseOperation(
+            host='http://127.0.0.1',
+            port='44777',
+            database_name='social_automation',
+            table_name='token_blacklist',
+            username='postgres',
+            password='postgres'
+        )
+
+        # Decode the refresh token
+        try:
+            payload = jwt.decode(refresh_token, os.getenv("SECRET_KEY"), algorithms=["HS256"])
+            user_id = payload.get("user_id")
+            refresh_token_id = payload.get("token_id")  # Add a unique ID to each refresh token
+            if not user_id:
+                logger.warning("Invalid refresh token - no user_id")
+                raise HTTPException(status_code=401, detail="Invalid refresh token")
+
+        except jwt.PyJWTError as e:
+            logger.error(f"JWT decode error: {str(e)}")
             raise HTTPException(status_code=401, detail="Invalid refresh token")
 
-        # You can check if the user exists in the database (optional)
-        user = db.query(User).filter(User.id == user_id).first()
-        if user is None:
-            logger.warning(f"User ID: {user_id}, User Email: {payload.get('email')} - User not found")
+        # Check if user exists
+        status_code, users = users_db.post_request(f"get?id__eq={user_id}")
+
+        if status_code != 200 or not users:
+            logger.warning(f"User ID: {user_id} not found")
             raise HTTPException(status_code=404, detail="User not found")
 
-        # Create a new access token
-        new_access_token = create_access_token(data={"user_id": user.id})
-        logger.info(f"User ID: {user_id}, User Email: {payload.get('email')} - New access token created")
-        # Return the new access token
-        return {"access_token": new_access_token, "token_type": "bearer"}
+        user = None
+        for u in users:
+            if u['id'] == user_id:
+                user = u
+                break
 
-    except jwt.PyJWTError:
-        logger.error(f"Invalid refresh token")
-        raise HTTPException(status_code=401, detail="Invalid refresh token")
+
+        # Generate new token ID for tracking
+        new_token_id = str(uuid.uuid4())
+
+        # Create a new access token with token ID
+        new_access_token = create_access_token(data={
+            "user_id": user['id'],
+            "token_id": new_token_id,
+            "refresh_token_id": refresh_token_id
+        })
+
+        # Store the new access token information
+        token_data = {
+            "token": new_access_token,
+            "user_id": user['id'],
+            "token_id": new_token_id,
+            "refresh_token_id": refresh_token_id,
+            "created_at": datetime.utcnow().isoformat(),
+            "is_active": True
+        }
+
+        # status_code, _ = blacklist_db.post_request(
+        #     "create",
+        #     data=token_data
+        # )
+
+        # if status_code != 201:
+        #     logger.error("Failed to store new token information")
+        #     raise HTTPException(
+        #         status_code=500,
+        #         detail="Failed to create new token"
+        #     )
+
+        logger.info(f"New access token created for user ID: {user['id']}, Email: {user['email']}")
+
+        return {
+            "access_token": new_access_token,
+            "token_type": "bearer",
+            "expires_in": int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", 30)) * 60
+        }
+
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        logger.error(f"Refresh token error: {str(e)}")
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to refresh token"
+        )
 
 
 
@@ -244,8 +318,27 @@ def get_users(db: Session = Depends(get_db), current_user: dict = Depends(get_su
 
 
 @router.get("/me")
-async def get_me(current_user: dict = Depends(get_current_user)):
+async def get_me(current_user: dict = Depends(get_current_user), token: str = Depends(oauth2_scheme)):
     try:
+        # Initialize database connections
+        blacklist_db = db_manager.get_database('token_blacklist')
+        # blacklist_db = DatabaseOperation(
+        #     host='http://127.0.0.1',
+        #     port='44777',
+        #     database_name='social_automation',
+        #     table_name='token_blacklist',
+        #     username='postgres',
+        #     password='postgres'
+        # )
+
+        # Check if token is blacklisted
+        status_code, blacklisted_tokens = blacklist_db.post_request(f"get?token__eq={token}")
+
+        for black_token in blacklisted_tokens:
+            if black_token['token'] == token:
+                return {"message": "Token has been invalidated. Please login again."}
+
+        # Initialize user service
         user_service = UserService()
 
         # Get or create profile
@@ -256,6 +349,7 @@ async def get_me(current_user: dict = Depends(get_current_user)):
 
         # Return user and profile data
         return {
+            "user_id": current_user['id'],
             "email": current_user['email'],
             "full_name": current_user['full_name'],
             "is_active": current_user['is_active'],
@@ -289,15 +383,15 @@ async def update_user_profile(
             profile_data=profile_data.model_dump(exclude_unset=True)
         )
 
-        if result["updates_made"]:
-            # Clear cache if using Redis
-            try:
-                if redis_client:
-                    redis_client.delete("all_users")
-            except Exception as e:
-                logger.warning(f"Failed to clear Redis cache: {str(e)}")
-
-            logger.info(f"Profile updated for user {current_user['email']}")
+        # if result["updates_made"]:
+        #     # Clear cache if using Redis
+        #     try:
+        #         if redis_client:
+        #             redis_client.delete("all_users")
+        #     except Exception as e:
+        #         logger.warning(f"Failed to clear Redis cache: {str(e)}")
+        #
+        #     logger.info(f"Profile updated for user {current_user['email']}")
 
         # Construct response
         return ProfileResponse(
@@ -321,165 +415,96 @@ async def update_user_profile(
         )
 
 
+
 @router.post("/change_password")
 async def change_password(
-    request: ChangePasswordRequest,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-    token: str = Depends(oauth2_scheme)  # The current JWT token
+        request: ChangePasswordRequest,
+        current_user: dict = Depends(get_current_user),
+        token: str = Depends(oauth2_scheme)
 ):
-    # Verify the old password
-    if not bcrypt.verify(request.old_password, current_user.hashed_password):
-        logger.warning(f"User ID: {current_user.id}, User Email: {current_user.email} - Old password is incorrect")
-        raise HTTPException(status_code=400, detail="Old password is incorrect")
+    try:
+        # Initialize database connections
+        users_db = db_manager.get_database('users')
+        # users_db = DatabaseOperation(
+        #     host='http://127.0.0.1',
+        #     port='44777',
+        #     database_name='social_automation',
+        #     table_name='users',
+        #     username='postgres',
+        #     password='postgres'
+        # )
 
-    # Check if new password and confirm password match
-    if request.new_password != request.confirm_password:
-        logger.warning(f"User ID: {current_user.id}, User Email: {current_user.email} - New password and confirmation do not match")
-        raise HTTPException(status_code=400, detail="New password and confirmation do not match")
+        blacklist_db = db_manager.get_database('token_blacklist')
 
-    # Hash the new password and update the database
-    hashed_password = bcrypt.hash(request.new_password)
-    current_user.hashed_password = hashed_password
-    db.commit()
-    db.refresh(current_user)
+        # blacklist_db = DatabaseOperation(
+        #     host='http://127.0.0.1',
+        #     port='44777',
+        #     database_name='social_automation',
+        #     table_name='token_blacklist',
+        #     username='postgres',
+        #     password='postgres'
+        # )
 
-    # Add the current token to the blacklist
-    db.add(TokenBlacklist(token=token))
-    db.commit()
-    logger.info(f"User ID: {current_user.id}, User Email: {current_user.email} - Password changed successfully")
-    return {"message": "Password changed successfully. Please log in again to continue."}
+        # Get current user's password
+        status_code, users = users_db.post_request(f"get?id__eq={current_user['id']}")
+        if status_code != 200 or not users:
+            raise HTTPException(status_code=404, detail="User not found")
 
+        # user = users[0]
+        user = next((p for p in users if p['id'] == current_user['id']), None)
 
-# @router.post("/change_password")
-# async def change_password(
-#         request: ChangePasswordRequest,
-#         current_user: dict = Depends(get_current_user),
-#         token: str = Depends(oauth2_scheme)
-# ):
-#     try:
-#         # Initialize database connections
-#         users_db = DatabaseOperation(
-#             host='http://127.0.0.1',
-#             port='44777',
-#             database_name='social_automation',
-#             table_name='users',
-#             username='postgres',
-#             password='postgres'
-#         )
-#
-#         blacklist_db = DatabaseOperation(
-#             host='http://127.0.0.1',
-#             port='44777',
-#             database_name='social_automation',
-#             table_name='token_blacklist',
-#             username='postgres',
-#             password='postgres'
-#         )
-#
-#         # Get current user's password
-#         status_code, users = users_db.post_request(f"get?id__eq={current_user['id']}")
-#         if status_code != 200 or not users:
-#             raise HTTPException(
-#                 status_code=status.HTTP_404_NOT_FOUND,
-#                 detail="User not found"
-#             )
-#
-#         user = users[0]
-#
-#         # Verify the old password
-#         if not bcrypt.verify(request.old_password, user['password']):
-#             logger.warning(
-#                 f"User ID: {user['id']}, "
-#                 f"User Email: {user['email']} - "
-#                 f"Old password is incorrect"
-#             )
-#             raise HTTPException(
-#                 status_code=status.HTTP_400_BAD_REQUEST,
-#                 detail="Old password is incorrect"
-#             )
-#
-#         # Check if new password and confirm password match
-#         if request.new_password != request.confirm_password:
-#             logger.warning(
-#                 f"User ID: {user['id']}, "
-#                 f"User Email: {user['email']} - "
-#                 f"New password and confirmation do not match"
-#             )
-#             raise HTTPException(
-#                 status_code=status.HTTP_400_BAD_REQUEST,
-#                 detail="New password and confirmation do not match"
-#             )
-#
-#         # Hash the new password
-#         hashed_password = bcrypt.hash(request.new_password)
-#
-#         # Update user's password
-#         status_code, _ = users_db.patch_request(
-#             f"update/{user['id']}",
-#             data={"password": hashed_password}
-#         )
-#
-#         if status_code != 202:
-#             raise HTTPException(
-#                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-#                 detail="Failed to update password"
-#             )
-#
-#         # Add the current token to the blacklist
-#         blacklist_data = {
-#             "token": token,
-#             "created_at": datetime.utcnow().isoformat(),
-#             "user_id": user['id']
-#         }
-#
-#         status_code, _ = blacklist_db.post_request(
-#             "create",
-#             data=blacklist_data
-#         )
-#
-#         if status_code != 201:
-#             logger.error(
-#                 f"Failed to blacklist token for user {user['email']} "
-#                 f"during password change"
-#             )
-#             # Continue anyway as password was changed successfully
-#
-#         # Clear any cached data
-#         try:
-#             if redis_client:
-#                 redis_client.delete(f"user_token_{user['id']}")
-#                 redis_client.delete("all_users")
-#         except Exception as e:
-#             logger.warning(f"Failed to clear Redis cache: {str(e)}")
-#
-#         logger.info(
-#             f"User ID: {user['id']}, "
-#             f"User Email: {user['email']} - "
-#             f"Password changed successfully"
-#         )
-#
-#         return {
-#             "message": "Password changed successfully. Please log in again to continue.",
-#             "timestamp": datetime.utcnow().isoformat()
-#         }
-#
-#     except HTTPException as he:
-#         raise he
-#     except Exception as e:
-#         logger.error(
-#             f"Password change error - "
-#             f"User: {current_user.get('email')}, "
-#             f"Error: {str(e)}"
-#         )
-#         raise HTTPException(
-#             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-#             detail="Failed to change password"
-#         )
+        # Verify the old password
+        if not bcrypt.verify(request.old_password, user['password']):
+            logger.warning(f"User ID: {user['id']}, User Email: {user['email']} - Old password is incorrect")
+            raise HTTPException(status_code=400, detail="Old password is incorrect")
+
+        # Check if new password and confirm password match
+        if request.new_password != request.confirm_password:
+            logger.warning(
+                f"User ID: {user['id']}, User Email: {user['email']} - New password and confirmation do not match")
+            raise HTTPException(status_code=400, detail="New password and confirmation do not match")
+
+        # Hash the new password and update the database
+        hashed_password = bcrypt.hash(request.new_password)
+
+        # Update user's password
+        status_code, _ = users_db.patch_request(
+            f"update/{user['id']}",
+            data={"password": hashed_password}
+        )
+
+        if status_code != 202:
+            raise HTTPException(status_code=500, detail="Failed to update password")
+
+        # Add the current token to the blacklist
+        blacklist_data = {
+            "token": token,
+            "created_at": datetime.utcnow().isoformat()
+        }
+
+        status_code, _ = blacklist_db.post_request(
+            "create",
+            data=blacklist_data
+        )
+
+        if status_code != 201:
+            logger.error(f"Failed to blacklist token for user {user['email']}")
+            # Continue anyway as password was changed successfully
+
+        logger.info(f"User ID: {user['id']}, User Email: {user['email']} - Password changed successfully")
+
+        return {
+            "message": "Password changed successfully. Please log in again to continue.",
+            "timestamp": datetime.utcnow().isoformat()
+        }
+
+    except HTTPException as he:
+        raise he
+    except Exception as e:
+        logger.error(f"Password change error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Failed to change password")
 
 
-from fastapi import  Depends, HTTPException, Request, BackgroundTasks
-from app.schemas.user_schema import ForgotPasswordRequest, ForgotPasswordResponse
 
 
 @router.post("/forgot-password", response_model=ForgotPasswordResponse)
@@ -492,8 +517,12 @@ async def forgot_password(
 ):
     try:
         logger.info(f"Password reset requested for email: {forgot_request.email}")
+        users = db_manager.get_database('users')
 
-        user = db.query(User).filter(User.email == forgot_request.email).first()
+        user = None
+        for user in users:
+            if user['email'] == forgot_request.email:
+                user = user
         if user:
             # Generate reset token
             reset_token = create_password_reset_token()
@@ -700,7 +729,24 @@ async def reset_password(
             """
 
         # Update password
-        user = db.query(User).filter(User.email == email).first()
+        users_db = db_manager.get_database('users')
+        # users_db = DatabaseOperation(
+        #     host='http://127.0.0.1',
+        #     port='44777',
+        #     database_name='social_automation',
+        #     table_name='users',
+        #     username='postgres',
+        #     password='postgres'
+        # )
+
+        # Get user by email
+        status_code, users = users_db.post_request(f"get?email__eq={email}")
+        user = None
+        for user in users:
+            if user['email'] == email:
+                user = user
+                break
+
         if not user:
             return """
             <html>
@@ -711,9 +757,11 @@ async def reset_password(
             </html>
             """
 
-        # Update password with new hash
-        user.hashed_password = bcrypt.hash(new_password)
-        db.commit()
+        hashed_password = bcrypt.hash(new_password)
+        status_code, _ = users_db.patch_request(
+            f"update/{user['id']}",
+            data={"password": hashed_password}
+        )
 
         # Delete used token
         TokenStorage.delete_token(email)

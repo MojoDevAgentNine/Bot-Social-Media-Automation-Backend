@@ -1,31 +1,18 @@
-from fastapi import HTTPException, Depends
 from typing import Optional
-from app.core.user_service import get_authenticated_user
-from app.database.database import get_db
-from app.models.user import User, UserRole, TokenBlacklist
-from app.core.auth import verify_token
 from sqlalchemy.orm import Session
-from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer
+from app.core.auth import verify_token
+from app.database.database import get_db
+from fastapi import HTTPException, Depends
 from app.utils.jwt_utils import decode_token
+from fastapi.security import OAuth2PasswordBearer
 from multidb_request_handler import DatabaseOperation
+from app.core.user_service import get_authenticated_user
+from app.models.user import User, UserRole, TokenBlacklist
+from fastapi import APIRouter, Depends, HTTPException, status
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
-# def get_current_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
-#     # Assume you have a function to decode the token and retrieve user info (e.g., user_id)
-#     user_id = decode_token(token)  # Implement this function according to your JWT setup
-#     user = get_authenticated_user(db, user_id)
-#     blacklisted_token = db.query(TokenBlacklist).filter(TokenBlacklist.token == token).first()
-#     if blacklisted_token:
-#         raise HTTPException(
-#             status_code=status.HTTP_401_UNAUTHORIZED,
-#             detail="Invalid or expired token",
-#             headers={"WWW-Authenticate": "Bearer"},
-#         )
-#     if not user:
-#         raise HTTPException(status_code=404, detail="User not found")
-#     return user
+
 class UserService:
     def __init__(self):
         self.users_db = DatabaseOperation(
@@ -75,7 +62,6 @@ class UserService:
 
             # Get user
             status_code, users = self.users_db.post_request(f"get")
-            # print(status_code, users)
 
             for user in users:
                 if user['id'] == user_id:
@@ -93,17 +79,23 @@ class UserService:
         """Get or create user profile"""
         # Try to get existing profile
         status_code, profiles = self.profiles_db.post_request(
-            f"get?user_id__eq={user_id}"
+            f"get"
         )
 
-        if status_code == 200 and profiles:
-            return profiles[0]
+        if status_code != 200:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to get profile"
+            )
+
+        for profile in profiles:
+            if profile['user_id'] == user_id:
+                return profile
+
 
         # Create new profile if doesn't exist
         new_profile = {
             "user_id": user_id,
-            "first_name": "",
-            "last_name": "",
             "address": "",
             "city": "",
             "state": "",
@@ -113,7 +105,7 @@ class UserService:
 
         status_code, created_profile = self.profiles_db.post_request(
             "create",
-            json=new_profile
+            data=new_profile
         )
 
         if status_code != 201:
@@ -128,8 +120,6 @@ class UserService:
 # Dependency for getting current user
 async def get_current_user(token: str = Depends(oauth2_scheme)):
     user_service = UserService()
-    print("*" * 100)
-    print("ami", token)
     return await user_service.get_current_user(token)
 
 

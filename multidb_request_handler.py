@@ -1,7 +1,7 @@
-import requests
+import os
 import json
 import logging
-import os
+import requests
 
 
 class DatabaseOperation:
@@ -121,11 +121,11 @@ if __name__ == "__main__":
     # # print(obj.post_request(endpoint="get"))
     # # Assuming `obj.post_request(endpoint="get")` returns a tuple of status code and list of dictionaries
     # status_code, data = obj.post_request(endpoint="get")
-
+    useremail = "mailarif3126@gmail.com"
     db = DatabaseOperation(host='http://127.0.0.1', port='44777',
                            database_name='social_automation', table_name='users',
                            username='postgres', password='postgres')
-    print(db.post_request(endpoint="get?id__like=arif.reza3126@gmail.com&role__like=admin"))
+    print(db.post_request(endpoint=f"get?email__like={useremail}"))
 
     # if status_code == 200:
     #     print("success")

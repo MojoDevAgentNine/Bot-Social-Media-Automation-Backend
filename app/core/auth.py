@@ -5,10 +5,11 @@ import jwt
 from passlib.hash import bcrypt
 from sqlalchemy.orm import Session
 from starlette import status
+from dateutil import parser  # For parsing ISO 8601 strings
 
 from app.models.user import User, UserRole, Profile
 from app.schemas.user_schema import UserRegisterRequest
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from fastapi import HTTPException
 from app.axiom_logger.authentication import logger
 from app.utils.redis import redis_client
@@ -73,23 +74,21 @@ class VerificationService:
 
         user = users[0]
         # Get verification code
-        current_time = datetime.utcnow().isoformat()
-        print(current_time)
+        current_time = datetime.now(timezone.utc)
 
         status_code, verifications = self.verification_db.post_request(
             f"get?user_id__eq={user['id']}"
             f"&code__eq={code}"
             f"&is_used__eq=false"
         )
-        print(status_code, verifications)
 
         if status_code != 200 or not verifications:
             return None
 
         # Mark code as used
         verification = verifications[-1]
-        print(verification)
-        if current_time > verification['expires_at'] :
+        verification['expires_at'] = parser.isoparse(verification['expires_at'])
+        if verification['expires_at'] < current_time:
             raise HTTPException(status_code=400, detail="Verification code has expired")
 
         if verification['is_used']:
@@ -289,7 +288,6 @@ async def register_user(user: UserRegisterRequest, current_user: dict = None):
 
 
 def login_user2(email: str, password: str):
-    print("aisi")
     db = DatabaseOperation(
         host='http://127.0.0.1',
         port='44777',
@@ -369,7 +367,9 @@ class ProfileService(DatabaseService):
 
             # Update existing_profile if found
             if status_code == 200 and profiles and len(profiles) > 0:
-                existing_profile.update(profiles[0])
+                profile = next((p for p in profiles if p['user_id'] == current_user['id']), None)
+                if profile:
+                        existing_profile.update(profile)
 
             # Handle full_name update in user table
             if 'full_name' in profile_data and profile_data['full_name'] != current_user.get('full_name'):

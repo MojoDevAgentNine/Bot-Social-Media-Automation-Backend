@@ -1,5 +1,5 @@
-from app.utils.redis import redis_client
 import secrets
+from app.utils.redis import redis_client
 
 class TokenStorage:
     PREFIX = "pwd_reset:"

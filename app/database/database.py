@@ -1,34 +1,8 @@
-# import os
-# from dotenv import load_dotenv
-# from sqlalchemy import create_engine
-# from sqlalchemy.orm import sessionmaker
-# from sqlalchemy.ext.declarative import declarative_base
-# load_dotenv()
-#
-# # DATABASE_URL = os.getenv("DATABASE_URL_LOCAL")
-# DATABASE_URL = "postgresql://postgres:123456789@db:5432/social_automation"
-# # DATABASE_URL = "postgresql://postgres:123456789@localhost:5432/social_automation"
-# # Initialize SQLAlchemy engine and session
-# engine = create_engine(DATABASE_URL)
-# SessionLocal = sessionmaker(autoflush=False, autocommit=False, bind=engine)
-# Base = declarative_base()
-#
-#
-# def get_db():
-#     db = SessionLocal()
-#     try:
-#         yield db
-#     finally:
-#         db.close()
-
-
-# app/database/database.py
-from sqlalchemy import create_engine, text  # Add text here
-from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker
 import logging
-
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy import create_engine, text
 from multidb_request_handler import DatabaseOperation
+from sqlalchemy.ext.declarative import declarative_base
 
 # Set up logging
 logging.basicConfig(level=logging.INFO)
@@ -68,13 +42,6 @@ def get_db():
     except Exception as e:
         logger.error(f"Database connection failed: {str(e)}")
         raise
-
-def get_usres_table():
-    db = DatabaseOperation(host='http://127.0.0.1', port='44777',
-                                database_name='social_automation', table_name='users',
-                                username='postgres', password='postgres')
-    print(db.post_request(endpoint="get?email__like=arif.reza3126@gmail.com&role__like=admin"))
-    return db
 
 
 

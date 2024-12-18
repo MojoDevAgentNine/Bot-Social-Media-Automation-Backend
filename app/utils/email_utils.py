@@ -1,18 +1,19 @@
 # utils/email_utils.py
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 import os
 import random
-from datetime import datetime, timedelta
-from sqlalchemy.orm import Session
-from app.models.user import EmailVerificationCode
+import smtplib
 from dotenv import load_dotenv
-
+from sqlalchemy.orm import Session
+from email.mime.text import MIMEText
+from datetime import datetime, timedelta
+from app.utils.db_cred import DatabaseManager
+from email.mime.multipart import MIMEMultipart
+from app.models.user import EmailVerificationCode
 from multidb_request_handler import DatabaseOperation
 
-load_dotenv()
 
+load_dotenv()
+db_manager = DatabaseManager()
 
 def generate_verification_code():
     return ''.join(random.choices('0123456789', k=6))
@@ -49,14 +50,15 @@ def send_verification_email(to_email: str, verification_code: str):
 
 
 def create_verification_code(user_id: int) -> str:
-    db = DatabaseOperation(
-        host='http://127.0.0.1',
-        port='44777',
-        database_name='social_automation',
-        table_name='email_verification_codes',
-        username='postgres',
-        password='postgres'
-    )
+    db = db_manager.get_database(table_name='email_verification_codes')
+    # db = DatabaseOperation(
+    #     host='http://127.0.0.1',
+    #     port='44777',
+    #     database_name='social_automation',
+    #     table_name='email_verification_codes',
+    #     username='postgres',
+    #     password='postgres'
+    # )
 
     # Generate verification code
     code = generate_verification_code()  # Implement this function
